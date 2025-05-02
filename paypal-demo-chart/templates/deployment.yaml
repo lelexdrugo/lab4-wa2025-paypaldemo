@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name }}
+    spec:
+      initContainers:
+      - name: wait-for-db
+        image: busybox
+        command:
+          - sh
+          - -c
+          - >
+            until nc -z {{ .Release.Name }}-postgresql 5432;
+            do echo "Waiting for database..."; sleep 2; done
+      - name: setup-debezium-connector
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for Kafka Connect to become available..."
+          until curl -s -f http://{{ .Release.Name }}-kafka-connect:8083/connectors; do
+            echo "Kafka Connect not ready yet, retrying..."
+            sleep 5
+          done
+
+          echo "Kafka Connect is up. Attempting to register connector..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Content-Type: application/json" \
+            --data '{
+              "name": "paypal-outbox-connector", 
+              "config": {
+                "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+                "database.hostname": "{{ .Release.Name }}-postgresql",
+                "database.port": "5432",
+                "database.user": "{{ .Values.postgresql.auth.username }}",
+                "database.password": "{{ .Values.postgresql.auth.password }}",
+                "database.dbname": "{{ .Values.postgresql.auth.database }}",
+                "database.server.name": "paypal",
+                "table.include.list": "public.paypal_outbox_events", 
+                "topic.prefix": "paypal",
+                "transforms": "unwrap",
+                "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+                "transforms.unwrap.drop.tombstones": "true",
+                "plugin.name": "pgoutput",
+                "key.converter.schemas.enable": "false",
+                "value.converter.schemas.enable": "false",
+                "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+                "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+                "snapshot.mode": "initial"
+              }
+            }' http://{{ .Release.Name }}-kafka-connect:8083/connectors/)
+
+          if [ "$RESPONSE" -eq 201 ] || [ "$RESPONSE" -eq 409 ]; then
+            echo "Connector registered successfully (or already exists). Exiting."
+            exit 0
+          else
+            echo "Failed to register connector. Status code: $RESPONSE"
+            exit 1
+          fi
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.service.port }}
+        env:
+        - name: SPRING_DATASOURCE_URL
+          value: jdbc:postgresql://{{ .Release.Name }}-postgresql:5432/{{ .Values.postgresql.auth.database }}
+        - name: SPRING_DATASOURCE_USERNAME
+          value: {{ .Values.postgresql.auth.username }}
+        - name: SPRING_DATASOURCE_PASSWORD
+          value: {{ .Values.postgresql.auth.password }}
+        - name: PAYPAL_CLIENT_ID
+          value: {{ .Values.paypal.clientId }}
+        - name: PAYPAL_CLIENT_SECRET
+          value: {{ .Values.paypal.clientSecret }}
+        - name: PAYPAL_CURRENCY
+          value: {{ .Values.paypal.currency }}
+        - name: PAYPAL_RETURN_URL
+          value: {{ .Values.paypal.returnUrl }}
+        - name: PAYPAL_CANCEL_URL
+          value: {{ .Values.paypal.cancelUrl }}
+        - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+          value: {{ .Release.Name }}-kafka:9092
+        - name: SPRING_KAFKA_CONSUMER_GROUP_ID
+          value: paypal-demo
+        - name: SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET
+          value: earliest
+        - name: SPRING_KAFKA_CONSUMER_KEY_DESERIALIZER
+          value: org.apache.kafka.common.serialization.StringDeserializer
+        - name: SPRING_KAFKA_CONSUMER_VALUE_DESERIALIZER
+          value: org.apache.kafka.common.serialization.StringDeserializer

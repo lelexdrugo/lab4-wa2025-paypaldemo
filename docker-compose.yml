@@ -1,0 +1,170 @@
+version: '3'
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:latest
+    container_name: paypal-demo-postgresql
+    environment:
+      POSTGRES_USER: db-user
+      POSTGRES_PASSWORD: db-password
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+
+  # Kafka
+  kafka:
+    image: bitnami/kafka:latest
+    container_name: paypal-demo-kafka
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LOG_RETENTION_HOURS: 168
+      KAFKA_CFG_LOG_RETENTION_BYTES: 1073741824
+    volumes:
+      - kafka_data:/bitnami/kafka
+
+  # Kafka Connect
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.2.2
+    container_name: paypal-demo-kafka-connect
+    depends_on:
+      - kafka
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_REST_PORT: 28082
+      CONNECT_GROUP_ID: kafka-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: kafka-connect-config
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_TOPIC: kafka-connect-offset
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_PARTITIONS: -1
+      CONNECT_OFFSET_PARTITION_NAME: kafka-connect.1
+      CONNECT_STATUS_STORAGE_TOPIC: kafka-connect-status
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_PARTITIONS: -1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_INTERNAL_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_INTERNAL_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_PRODUCER_INTERCEPTOR_CLASSES: io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor
+      CONNECT_CONSUMER_INTERCEPTOR_CLASSES: io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_LOG4J_LOGGERS: org.reflections=ERROR
+    volumes:
+      - kafka_connect_plugins:/usr/share/confluent-hub-components
+    command:
+      - bash
+      - -c
+      - |
+        echo "Installing Debezium connector..."
+        confluent-hub install debezium/debezium-connector-postgresql:latest --no-prompt
+        echo "Starting Kafka Connect..."
+        /etc/confluent/docker/run
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: paypal-demo-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: first
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  # Spring Boot backend
+  spring-backend:
+    image: registry.nicolfo.ovh/nicolfo/payment-service:0.0.20
+    container_name: paypal-demo-backend
+    depends_on:
+      - postgres
+      - kafka
+      - kafka-connect
+    ports:
+      - "80:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres
+      SPRING_DATASOURCE_USERNAME: db-user
+      SPRING_DATASOURCE_PASSWORD: db-password
+      PAYPAL_CLIENT_ID: YOUR_CLIENT_ID
+      PAYPAL_CLIENT_SECRET: YOUR_CLIENT_SECRET
+      PAYPAL_CURRENCY: EUR
+      PAYPAL_RETURN_URL: http://localhost/api/cart/paypal/capture
+      PAYPAL_CANCEL_URL: http://localhost/api/cart/paypal/cancel
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_CONSUMER_GROUP_ID: paypal-demo-2
+      SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET: earliest
+      SPRING_KAFKA_CONSUMER_KEY_DESERIALIZER: org.apache.kafka.common.serialization.StringDeserializer
+      SPRING_KAFKA_CONSUMER_VALUE_DESERIALIZER: org.apache.kafka.common.serialization.StringDeserializer
+
+  # Setup Debezium connector
+  setup-connector:
+    image: curlimages/curl:latest
+    container_name: setup-connector
+    depends_on:
+      - kafka-connect
+      - postgres
+    restart: no
+    command:
+      - sh
+      - -c
+      - |
+        echo "Waiting for Kafka Connect to become available..."
+        until curl -s -f http://kafka-connect:8083/connectors; do
+          echo "Kafka Connect not ready yet, retrying..."
+          sleep 5
+        done
+
+        echo "Kafka Connect is up. Attempting to register connector..."
+        RESPONSE=$$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+          -H "Content-Type: application/json" \
+          --data '{
+            "name": "paypal-outbox-connector", 
+            "config": {
+              "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+              "database.hostname": "postgres",
+              "database.port": "5432",
+              "database.user": "db-user",
+              "database.password": "db-password",
+              "database.dbname": "postgres",
+              "database.server.name": "paypal",
+              "table.include.list": "public.paypal_outbox_events", 
+              "topic.prefix": "paypal",
+              "transforms": "unwrap",
+              "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+              "transforms.unwrap.drop.tombstones": "true",
+              "plugin.name": "pgoutput",
+              "key.converter.schemas.enable": "false",
+              "value.converter.schemas.enable": "false",
+              "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+              "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+              "snapshot.mode": "initial"
+            }
+          }' http://kafka-connect:8083/connectors/)
+        
+        if [ "$$RESPONSE" -eq 201 ] || [ "$$RESPONSE" -eq 409 ]; then
+          echo "Connector registered successfully (or already exists). Exiting."
+          exit 0
+        else
+          echo "Failed to register connector. Status code: $$RESPONSE"
+          exit 1
+        fi
+
+volumes:
+  postgres_data:
+  kafka_data:
+  kafka_connect_plugins:

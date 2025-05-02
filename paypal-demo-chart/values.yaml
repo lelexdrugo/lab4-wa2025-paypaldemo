@@ -1,0 +1,112 @@
+replicaCount: 1
+
+image:
+  repository: registry.nicolfo.ovh/nicolfo/payment-service
+  tag: 0.0.20
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: paypal-demo.nicolfo.ovh
+
+paypal:
+  clientId: "YOUR_CLIENT_ID"
+  clientSecret: "YOUR_CLIENT_SECRET"
+  currency: EUR
+  returnUrl: "http://paypal-demo.nicolfo.ovh/api/cart/paypal/capture"
+  cancelUrl: "http://paypal-demo.nicolfo.ovh/api/cart/paypal/cancel"
+
+postgresql:
+  auth:
+    username: db-user
+    password: db-password
+    database: postgres
+  primary:
+    service:
+      ports:
+        postgresql: 5432
+
+    extendedConfiguration: |-
+      wal_level = logical
+
+kafka-connect:
+  kafka:
+    fullnameOverride: "paypal-demo-kafka"
+    nameOverride: "paypal-demo-kafka"
+    # Add persistence configuration
+    persistence:
+      enabled: true
+      size: 10Gi  # Adjust size based on your needs
+      storageClass: ""  # Use default or specify a storage class
+    # Add log retention settings
+    configurationOverrides:
+      "log.retention.hours": 168  # 7 days
+      "log.retention.bytes": 1073741824  # 1GB per partition
+  enabled: true
+  replicaCount: 1
+  fullnameOverride: "paypal-demo-kafka-connect"
+  nameOverride: "paypal-demo-kafka-connect"
+  extraVolumeMounts:
+    - name: plugin
+      mountPath: /usr/share/confluent-hub-components
+  extraVolumes:
+    - name: plugin
+      emptyDir: {}
+  initContainers:
+    - name: init-plugin
+      image: confluentinc/cp-kafka-connect:7.2.2
+      command:
+        - sh
+        - -c
+        - confluent-hub install debezium/debezium-connector-postgresql:latest --no-prompt
+      volumeMounts:
+        - name: plugin
+          mountPath: /usr/share/confluent-hub-components
+  configMapPairs:
+    CONNECT_BOOTSTRAP_SERVERS: "paypal-demo-kafka:9092"
+    CONNECT_REST_PORT: "28082"
+    CONNECT_GROUP_ID: kafka-connect
+    CONNECT_CONFIG_STORAGE_TOPIC: kafka-connect-config
+    CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+    CONNECT_OFFSET_STORAGE_TOPIC: kafka-connect-offset
+    CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+    CONNECT_OFFSET_STORAGE_PARTITIONS: "-1"
+    CONNECT_OFFSET_PARTITION_NAME: kafka-connect.1
+    CONNECT_STATUS_STORAGE_TOPIC: kafka-connect-status
+    CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+    CONNECT_STATUS_STORAGE_PARTITIONS: "-1"
+    CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+    CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+    CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://paypal-demo-schema-registry:8081
+    CONNECT_INTERNAL_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+    CONNECT_INTERNAL_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+    CONNECT_PRODUCER_INTERCEPTOR_CLASSES: io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor
+    CONNECT_CONSUMER_INTERCEPTOR_CLASSES: io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor
+    CONNECT_REST_ADVERTISED_HOST_NAME: paypal-demo-kafka-connect
+    CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+    CONNECT_LOG4J_LOGGERS: org.apache.zookeeper=ERROR,org.I0Itec.zkclient=ERROR,org.reflections=ERROR
+
+  schema-registry:
+    externalKafka:
+      brokers:
+        - PLAINTEXT://paypal-demo-kafka:9092
+
+kafka_ui:
+  enabled: true
+  image:
+    repository: provectuslabs/kafka-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    port: 8080
+  ingress:
+    enabled: true
+    className: nginx
+    host: kafka.nicolfo.ovh
+  config:
+    KAFKA_CLUSTERS_0_NAME: paypal-demo
+    KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: paypal-demo-kafka:9092

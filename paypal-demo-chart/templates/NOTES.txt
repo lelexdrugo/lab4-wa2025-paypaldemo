@@ -1,0 +1,58 @@
+🎉 {{ .Chart.Name }} has been successfully deployed!
+
+🌐 Access your application:
+
+  URL: https://{{ .Values.ingress.host }}
+
+  This will route traffic to your Spring Boot PayPal demo app.
+
+🔐 Database (PostgreSQL):
+
+  Host: {{ .Release.Name }}-postgresql
+  Port: 5432
+  Database: {{ .Values.postgresql.auth.database }}
+  Username: {{ .Values.postgresql.auth.username }}
+  Password: {{ .Values.postgresql.auth.password }}
+
+🚀 Spring Boot environment is configured with:
+
+  - Datasource URL: jdbc:postgresql://{{ .Release.Name }}-postgresql:5432/{{ .Values.postgresql.auth.database }}
+  - PayPal Client ID: {{ .Values.paypal.clientId }}
+  - PayPal Currency: {{ .Values.paypal.currency }}
+  - Return URL: {{ .Values.paypal.returnUrl }}
+  - Cancel URL: {{ .Values.paypal.cancelUrl }}
+
+📊 Kafka Configuration:
+
+  - Bootstrap Servers: {{ .Release.Name }}-kafka:9092
+  - Topic: paypal.public.paypal_outbox_events
+  - Consumer Group: {{ "paypal-demo" }}
+
+{{- if .Values.kafka_ui.enabled }}
+📊 Kafka UI:
+
+  URL: https://{{ .Values.kafka_ui.ingress.host }}
+  
+  Use this interface to monitor Kafka topics, consumer groups, and messages.
+{{- end }}
+
+📦 Helm Commands:
+
+  To upgrade the chart:
+  helm upgrade {{ .Release.Name }} ./paypal-demo-chart --namespace {{ .Release.Namespace }}
+
+  To uninstall:
+  helm uninstall {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+
+  To check status:
+  helm status {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+
+🔍 Troubleshooting:
+
+  View application logs:
+  kubectl logs -f deployment/{{ .Chart.Name }} -n {{ .Release.Namespace }}
+
+  Check pod status:
+  kubectl get pods -n {{ .Release.Namespace }}
+
+Happy coding! 👨‍💻

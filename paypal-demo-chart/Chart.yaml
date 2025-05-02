@@ -1,0 +1,13 @@
+apiVersion: v2
+name: paypal-demo
+description: A Helm chart for deploying the PayPal Spring Boot app
+version: 0.1.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: postgresql
+    version: 16.6.3
+    repository: https://charts.bitnami.com/bitnami
+  - name: kafka-connect
+    version: 0.4.0
+    repository: https://licenseware.github.io/charts/
