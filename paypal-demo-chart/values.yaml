@@ -62,7 +62,7 @@ kafka-connect:
       command:
         - sh
         - -c
-        - confluent-hub install debezium/debezium-connector-postgresql:latest --no-prompt
+        - confluent-hub install debezium/debezium-connector-postgresql:2.5.4 --no-prompt
       volumeMounts:
         - name: plugin
           mountPath: /usr/share/confluent-hub-components

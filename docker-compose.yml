@@ -33,7 +33,7 @@ services:
 
   # Kafka Connect
   kafka-connect:
-    image: confluentinc/cp-kafka-connect:7.2.2
+    image: confluentinc/cp-kafka-connect:7.9.0
     container_name: paypal-demo-kafka-connect
     depends_on:
       - kafka
@@ -66,7 +66,7 @@ services:
       - -c
       - |
         echo "Installing Debezium connector..."
-        confluent-hub install debezium/debezium-connector-postgresql:latest --no-prompt
+        confluent-hub install debezium/debezium-connector-postgresql:3.0.8 --no-prompt
         echo "Starting Kafka Connect..."
         /etc/confluent/docker/run
 
